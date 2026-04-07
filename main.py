@@ -6,105 +6,172 @@ from xai_sdk import Client
 from xai_sdk.chat import user
 from xai_sdk.tools import x_search
 
-# --- 設定 ---
-API_KEY = os.environ.get("XAI_API_KEY")
+# — 設定 —
+
+API_KEY = os.environ.get(“XAI_API_KEY”)
 if not API_KEY:
-    raise ValueError("XAI_API_KEY が設定されていません。Secrets に登録してください。")
+raise ValueError(“XAI_API_KEY が設定されていません。Secrets に登録してください。”)
 
 client = Client(api_key=API_KEY)
 
-# 日本時間タイムスタンプ
 JST = datetime.timezone(datetime.timedelta(hours=+9))
 now_jst = datetime.datetime.now(JST)
-timestamp = now_jst.strftime("%Y%m%d_%H%M")
+timestamp = now_jst.strftime(”%Y%m%d_%H%M”)
+today = now_jst.strftime(”%Y%m%d”)
 
-# セクターとキーワード
 sectors = {
-    "メモリ": ["MU", "SK Hynix", "HBM"],
-    "AIインフラ": ["NVDA", "NVIDIA"],
-    "フォトニクス": ["住友電工", "CPO"],
-    "マクロ": ["S&P500 tariff recession risk 2026"]
+“メモリ”: [“MU”, “SK Hynix”, “HBM”],
+“AIインフラ”: [“NVDA”, “NVIDIA”],
+“フォトニクス”: [“住友電工”, “CPO”],
+“マクロ”: [“S&P500 tariff recession risk 2026”]
 }
 
-# キャッシュディレクトリ
-cache_dir = Path("cache")
-cache_dir.mkdir(exist_ok=True)
+# キャッシュは日付ごとに分離
 
-# --- 結果格納 ---
+cache_dir = Path(“cache”) / today
+cache_dir.mkdir(parents=True, exist_ok=True)
+
 sector_results = {}
 
 for sector, keywords in sectors.items():
-    # キャッシュファイル名
-    cache_file = cache_dir / f"{sector.replace(' ', '_')}.json"
+cache_file = cache_dir / f”{sector.replace(’ ’, ‘_’)}.json”
 
-    # キャッシュがあれば再利用
-    if cache_file.exists():
-        with open(cache_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            sector_results[sector] = data
-        continue
+```
+if cache_file.exists():
+    with open(cache_file, "r", encoding="utf-8") as f:
+        sector_results[sector] = json.load(f)
+    print(f"[{sector}] キャッシュ使用")
+    continue
 
-    # キャッシュがなければXAI検索
-    prompt_text = f"次のキーワードについて最新情報をXで調べ、本文とURLを出力してください: {', '.join(keywords)}"
-    chat = client.chat.create(model="grok-4-1-fast", tools=[x_search()])
+print(f"[{sector}] X検索中...")
+
+# =========================================
+# Stage 1: X検索
+# =========================================
+try:
+    prompt_text = (
+        f"次のキーワードについて最新情報をXで調べ、"
+        f"投稿の原文とURLを出力してください: {', '.join(keywords)}"
+    )
+    chat = client.chat.create(model="grok-4-fast", tools=[x_search()])
     chat.append(user(prompt_text))
-    response = chat.sample()
+    search_response = chat.sample()
+    raw_content = search_response.content
 
-    # 取得投稿数チェック
-    post_count = len(response.content.split("\n"))
-    if post_count < 3:
-        data = {
-            "score": None,
-            "sentiment": "データ不足",
-            "content": "取得投稿数が少ないため分析不能です。"
-        }
-    else:
-        data = {
-            "score": 2,
-            "sentiment": "強気",
-            "content": response.content
-        }
+except Exception as e:
+    print(f"[{sector}] X検索エラー: {e}")
+    sector_results[sector] = {
+        "score": None, "sentiment": "エラー",
+        "reason": str(e), "key_signals": [], "content": ""
+    }
+    continue
 
-    # 結果を保存
-    with open(cache_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+if not raw_content or len(raw_content.strip()) < 50:
+    print(f"[{sector}] データ不足")
+    sector_results[sector] = {
+        "score": None, "sentiment": "データ不足",
+        "reason": "取得投稿数が少ないため分析不能",
+        "key_signals": [], "content": raw_content
+    }
+    continue
 
-    sector_results[sector] = data
+# =========================================
+# Stage 2: センチメント分析
+# response_format='json_object' でJSON出力を強制
+# =========================================
+print(f"[{sector}] スコアリング中...")
+try:
+    scoring_prompt = f"""
+```
 
-# --- アクション候補 ---
-actions = {
-    "メモリ": "静観（テーゼ変化なし）",
-    "AIインフラ": "現場シグナル待ち",
-    "フォトニクス": "注視",
-    "マクロ": "フレームワーク通り待機"
-}
+以下はX（旧Twitter）から取得した「{sector}」セクター（キーワード: {’, ’.join(keywords)}）に関する最新投稿です。
 
-# --- レポート作成 ---
-report_file = f"report_{timestamp}.md"
-with open(report_file, "w", encoding="utf-8") as f:
-    f.write(f"# 週次ポートフォリオ X スキャンレポート\n")
-    f.write(f"更新: {now_jst.strftime('%Y-%m-%d %H:%M')}\n\n")
+-----
 
-    f.write("## 総合サマリー\n")
-    f.write("全セクターを横断した分析の結果、AIインフラとメモリ関連が強気の傾向を示しています。\n\n")
+## {raw_content}
 
-    # セクター別スコア
-    f.write("## セクター別スコア\n")
-    f.write("| セクター | センチメント | スコア |\n")
-    f.write("|---------|------------|-------|\n")
-    for sector, data in sector_results.items():
-        score_display = data['score'] if data['score'] is not None else "-"
-        f.write(f"| {sector} | {data['sentiment']} | {score_display} |\n")
+この情報を投資家の視点で分析し、以下のJSON形式で回答してください。
 
-    # セクター詳細
-    f.write("\n## セクター詳細\n")
-    for sector, data in sector_results.items():
-        f.write(f"### {sector}\n")
-        f.write(f"{data['content']}\n\n")
+{{
+“score”: <-2〜+2の整数。+2=強気, +1=やや強気, 0=中立, -1=やや弱気, -2=弱気>,
+“sentiment”: <“強気” | “やや強気” | “中立” | “やや弱気” | “弱気”>,
+“reason”: <スコアの根拠を2〜3文で説明>,
+“key_signals”: [<重要シグナル1>, <重要シグナル2>, <重要シグナル3>]
+}}
+“””
+score_chat = client.chat.create(
+model=“grok-4-fast”,
+response_format=“json_object”  # JSON出力を強制
+)
+score_chat.append(user(scoring_prompt))
+score_response = score_chat.sample()
 
-    # 今週のアクション候補
-    f.write("## 今週のアクション候補\n")
-    for sector, action in actions.items():
-        f.write(f"- {sector}: {action}\n")
+```
+    parsed = json.loads(score_response.content)
 
-print(f"Report saved to {report_file}")
+    data = {
+        "score": parsed.get("score"),
+        "sentiment": parsed.get("sentiment", "不明"),
+        "reason": parsed.get("reason", ""),
+        "key_signals": parsed.get("key_signals", []),
+        "content": raw_content
+    }
+
+except json.JSONDecodeError as e:
+    print(f"[{sector}] JSONパースエラー: {e}")
+    data = {
+        "score": None, "sentiment": "分析エラー",
+        "reason": f"JSONパース失敗: {e}",
+        "key_signals": [], "content": raw_content
+    }
+except Exception as e:
+    print(f"[{sector}] スコアリングエラー: {e}")
+    data = {
+        "score": None, "sentiment": "分析エラー",
+        "reason": str(e), "key_signals": [], "content": raw_content
+    }
+
+with open(cache_file, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+
+sector_results[sector] = data
+```
+
+# =========================================
+
+# レポート作成（アクション判断はClaudeに委任）
+
+# =========================================
+
+report_file = f”report_{timestamp}.md”
+with open(report_file, “w”, encoding=“utf-8”) as f:
+f.write(f”# 週次ポートフォリオ X スキャンレポート\n”)
+f.write(f”更新: {now_jst.strftime(’%Y-%m-%d %H:%M’)} JST\n\n”)
+
+```
+f.write("## セクター別スコア\n")
+f.write("| セクター | センチメント | スコア |\n")
+f.write("|---------|------------|:-----:|\n")
+for sector, data in sector_results.items():
+    score_display = data["score"] if data["score"] is not None else "-"
+    f.write(f"| {sector} | {data['sentiment']} | {score_display} |\n")
+
+f.write("\n## セクター詳細\n")
+for sector, data in sector_results.items():
+    score_display = data["score"] if data["score"] is not None else "-"
+    f.write(f"### {sector}（スコア: {score_display} / {data['sentiment']}）\n\n")
+
+    if data.get("reason"):
+        f.write(f"**根拠**: {data['reason']}\n\n")
+
+    if data.get("key_signals"):
+        f.write("**主要シグナル**:\n")
+        for sig in data["key_signals"]:
+            f.write(f"- {sig}\n")
+        f.write("\n")
+
+    f.write(f"**Xポスト内容**:\n{data['content']}\n\n")
+    f.write("---\n\n")
+```
+
+print(f”Report saved to {report_file}”)
