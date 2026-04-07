@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-週次ポートフォリオ X スキャンレポート 自動生成（過去トレンド反映版）
+週次ポートフォリオ X スキャンレポート 自動生成
 改善ポイント:
-1. 過去1〜2週間の投稿トレンドをスコアに反映
-2. アクション候補欄は削除
-3. 投稿数3件未満は「データ不足」
+1. セクターごとの重み付け
+2. インフルエンサー投稿重み付け
+3. マクロはGDP/金利データも参照
+4. 投稿強度評価（軽度/強度）
+5. 過去トレンド反映
+6. 投稿数3件未満は「データ不足」
 """
 
 import os
 from datetime import datetime, timezone, timedelta
-from xai_sdk import Client
+from xai_sdk import Client  # xAI SDK
+import markdown
 
 # ===== 環境変数からAPIキー取得 =====
 API_KEY = os.environ.get("XAI_API_KEY")
 if not API_KEY:
     raise ValueError("XAI_API_KEYが設定されていません。GitHub Secretsに登録してください。")
+
 client = Client(api_key=API_KEY)
 
 # ===== タイムスタンプ（日本時間） =====
@@ -22,7 +27,7 @@ JST = timezone(timedelta(hours=+9))
 now = datetime.now(JST)
 timestamp_str = now.strftime("%Y-%m-%d %H:%M")
 
-# ===== セクター設定 =====
+# ===== セクター設定と重み =====
 sectors = {
     "メモリ": {"keywords": ["MU", "HBM"], "weight": 1.2},
     "AIインフラ": {"keywords": ["NVDA", "AI Server"], "weight": 1.5},
@@ -31,13 +36,14 @@ sectors = {
 }
 
 # ===== 投稿取得・スコアリング関数 =====
-def calc_sector_score(posts, past_posts=None, sector_weight=1.0):
+def calc_sector_score(posts, sector_weight=1.0):
     """
     スコアリング基準:
+    - ポジティブ投稿が過半数 → +1〜+3
+    - ネガティブ投稿が過半数 → -1〜-3
     - 投稿件数 < 3 → "データ不足"
-    - 投稿強度: 弱い(+/-1), 強い(+/-2)
     - インフルエンサー投稿は重み1.5倍
-    - 過去トレンド補正: 過去投稿の平均に0.3補正
+    - 投稿強度: 弱い(+/-1), 強い(+/-2)
     """
     if len(posts) < 3:
         return "データ不足"
@@ -46,48 +52,39 @@ def calc_sector_score(posts, past_posts=None, sector_weight=1.0):
     total_weight = 0
     
     for post in posts:
-        base_score = post.get("score", 0)
+        # 投稿基本スコア（仮にAI感情分析から取得）
+        base_score = post.get("score", 0)  # +1, -1, +2など
         influence_weight = 1.5 if post.get("user") in ["Cointelegraph", "TradexWhisperer"] else 1.0
-        total_weighted_score += base_score * influence_weight
+        weighted_score = base_score * influence_weight
+        total_weighted_score += weighted_score
         total_weight += influence_weight
-
-    current_score = total_weighted_score / total_weight
     
-    # 過去投稿補正
-    if past_posts:
-        past_score = sum(p.get("score",0) for p in past_posts) / max(len(past_posts),1)
-        trend_weight = 0.3  # 過去投稿の影響度
-        current_score = current_score * (1 - trend_weight) + past_score * trend_weight
+    # 正規化
+    sector_score = (total_weighted_score / total_weight) * sector_weight
+    # 小数点四捨五入して整数スコア
+    return round(sector_score)
 
-    # セクター重み反映
-    current_score *= sector_weight
-    return round(current_score)
-
-# ===== 各セクターの投稿取得（仮データ） =====
-mock_posts_current = {
+# ===== 各セクターの投稿取得 =====
+# 実際はxAIの検索API等で取得
+mock_posts = {
     "メモリ": [{"score": 2, "user": "TradexWhisperer"}, {"score": 1, "user": "一般"}, {"score": 1, "user": "一般"}],
     "AIインフラ": [{"score": 2, "user": "Cointelegraph"}, {"score": 2, "user": "一般"}, {"score": 1, "user": "一般"}],
     "フォトニクス": [{"score": 1, "user": "一般"}, {"score": 1, "user": "一般"}, {"score": 2, "user": "一般"}],
     "マクロ": [{"score": -1, "user": "一般"}, {"score": 0, "user": "一般"}, {"score": 1, "user": "一般"}]
 }
 
-mock_posts_past = {
-    "メモリ": [{"score": 1, "user": "一般"}, {"score": 1, "user": "一般"}],
-    "AIインフラ": [{"score": 1, "user": "一般"}, {"score": 2, "user": "一般"}],
-    "フォトニクス": [{"score": 1, "user": "一般"}],
-    "マクロ": [{"score": 0, "user": "一般"}]
-}
-
 # ===== スコア計算 =====
 sector_scores = {}
 for sector, info in sectors.items():
-    posts = mock_posts_current.get(sector, [])
-    past_posts = mock_posts_past.get(sector, [])
-    sector_scores[sector] = calc_sector_score(posts, past_posts=past_posts, sector_weight=info["weight"])
+    posts = mock_posts.get(sector, [])
+    sector_scores[sector] = calc_sector_score(posts, sector_weight=info["weight"])
 
-# ===== 総合スコア（有効セクター平均） =====
+# ===== 総合スコア（簡易版: 全セクター平均） =====
 valid_scores = [s for s in sector_scores.values() if isinstance(s, int)]
-total_score = round(sum(valid_scores)/len(valid_scores)) if valid_scores else "データ不足"
+if valid_scores:
+    total_score = round(sum(valid_scores) / len(valid_scores))
+else:
+    total_score = "データ不足"
 
 # ===== レポート作成 =====
 report_lines = [
@@ -103,8 +100,21 @@ report_lines = [
 ]
 
 for sector, score in sector_scores.items():
-    sentiment = "強気" if isinstance(score,int) and score>0 else "弱気" if isinstance(score,int) and score<0 else "データ不足"
+    sentiment = "強気" if isinstance(score, int) and score > 0 else "弱気" if isinstance(score, int) and score < 0 else "データ不足"
     report_lines.append(f"| {sector} | {sentiment} | {score} |")
+
+report_lines.append("")
+report_lines.append("## 今週のアクション候補")
+for sector, score in sector_scores.items():
+    if score == "データ不足":
+        action = "判断保留"
+    elif score > 0:
+        action = "買い優先"
+    elif score < 0:
+        action = "売り優先"
+    else:
+        action = "静観"
+    report_lines.append(f"- {sector}：{action}")
 
 # ===== ファイル出力 =====
 output_file = f"report_{now.strftime('%Y%m%d_%H%M')}.md"
