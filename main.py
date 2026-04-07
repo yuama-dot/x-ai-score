@@ -33,7 +33,7 @@ cache_dir.mkdir(parents=True, exist_ok=True)
 sector_results = {}
 
 for sector, keywords in sectors.items():
-    cache_file = cache_dir / f"{sector.replace(' ', '_')}.json"
+    cache_file = cache_dir / f"{sector.replace(' ', '_').replace('/', '_')}.json"
 
     if cache_file.exists():
         with open(cache_file, "r", encoding="utf-8") as f:
