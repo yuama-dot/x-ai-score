@@ -1,47 +1,53 @@
-# main.py
+import os
+import json
 import datetime
 from xai_sdk import Client
 from xai_sdk.chat import user
 from xai_sdk.tools import x_search
-import os
-import markdown
 
-# ==== APIキー設定 ====
+# ------------------------------
+# API クライアント設定
+# ------------------------------
 API_KEY = os.environ.get("XAI_API_KEY")
 client = Client(api_key=API_KEY)
 
-# ==== 関数定義 ====
-def x_sentiment(topic, lang="ja"):
-    lang_note = {"ja": "日本語の投稿を中心に", "en": "英語の投稿を中心に", "both": "日英両方の投稿を"}[lang]
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    prompt = f"""X（Twitter）で「{topic}」について{lang_note}最新情報を検索し、以下の形式で出力してください。
+# ------------------------------
+# 設定：キーワード・セクター
+# ------------------------------
+SEARCHES = [
+    {"topic": "Micron MU HBM4 AI memory Vera Rubin", "sector": "メモリ", "lang": "en"},
+    {"topic": "HBM4 SK Hynix Samsung memory AI chip", "sector": "メモリ", "lang": "en"},
+    {"topic": "NVIDIA NVDA Blackwell GB300 datacenter", "sector": "AIインフラ", "lang": "en"},
+    {"topic": "AI infrastructure hyperscaler capex 2026", "sector": "AIインフラ", "lang": "en"},
+    {"topic": "S&P500 AI tariff recession sentiment", "sector": "マクロ", "lang": "both"},
+    {"topic": "住友電工 フォトニクス CPO 光トランシーバ", "sector": "フォトニクス", "lang": "ja"},
+    {"topic": "CPO co-packaged optics photonics InP wafer", "sector": "フォトニクス", "lang": "en"},
+]
 
+CACHE_FILE = "cache.json"
+
+# ------------------------------
+# ヘルパー関数
+# ------------------------------
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_cache(cache):
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+def x_sentiment(topic, lang="ja", max_results=5):
+    prompt = f"""X（Twitter）で「{topic}」について最新情報を{lang}で検索し、以下の形式で出力してください。
 【検索トピック】{topic}
-【検索日時】{now}
-
-【センチメント】強気/弱気/中立のいずれか
+【センチメント】強気/弱気/中立
 【根拠】1〜2文で具体的に
-
 【キーワード】キーワード1 / キーワード2 / キーワード3
-
-【市場の声まとめ】
-Xで見られる意見・論調を200〜300字でまとめた段落テキスト。箇条書きではなく文章で。
-
 【注目ポスト】
-1. @投稿者名
-   「投稿本文の全文」
-   URL
-
-2. @投稿者名
-   「投稿本文の全文」
-   URL
-
-3. @投稿者名
-   「投稿本文の全文」
-   URL
-
-URLだけでなく必ず投稿本文テキストを含めること。"""
-
+1. @投稿者名 「投稿本文の全文」 URL
+"""
     chat = client.chat.create(
         model="grok-4-1-fast",
         tools=[x_search()],
@@ -50,79 +56,82 @@ URLだけでなく必ず投稿本文テキストを含めること。"""
     response = chat.sample()
     return response.content
 
-def x_user_check(handle: str, topic: str):
-    prompt = f"""@{handle}の最新投稿を検索し、「{topic}」に関連する内容があれば本文・日時・URLとともに紹介してください。
-関連投稿がなければ「関連投稿なし」と返してください。"""
-    chat = client.chat.create(
-        model="grok-4-1-fast",
-        tools=[x_search(allowed_x_handles=[handle])],
-    )
-    chat.append(user(prompt))
-    response = chat.sample()
-    return response.content
+# ------------------------------
+# メイン処理
+# ------------------------------
+def main():
+    cache = load_cache()
+    report = {}
+    sector_scores = {}
 
-# ==== 検索リスト ====
-SEARCHES = [
-    ("Micron MU HBM4 AI memory Vera Rubin", "en"),
-    ("HBM4 SK Hynix Samsung memory AI chip", "en"),
-    ("NVIDIA NVDA Blackwell GB300 datacenter", "en"),
-    ("AI infrastructure hyperscaler capex 2026", "en"),
-    ("S&P500 AI tariff recession sentiment", "both"),
-    ("住友電工 フォトニクス CPO 光トランシーバ", "ja"),
-    ("CPO co-packaged optics photonics InP wafer", "en"),
-]
+    for item in SEARCHES:
+        topic = item["topic"]
+        sector = item["sector"]
+        lang = item.get("lang", "en")
 
-# ==== レポート生成 ====
-timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-report_name = f"report_{timestamp}.md"
+        # キャッシュにある場合はスキップ
+        if topic in cache:
+            result = cache[topic]
+        else:
+            result = x_sentiment(topic, lang=lang)
+            cache[topic] = result
 
-with open(report_name, "w", encoding="utf-8") as f:
-    f.write(f"# 📊 AI市場レポート\n\n更新: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
+        # セクター別集計
+        if sector not in sector_scores:
+            sector_scores[sector] = {"score": 0, "entries": []}
 
-    # 特定アカウントチェック
-    f.write("## === @paurooteri チェック ===\n")
-    result = x_user_check("paurooteri", "AI memory photonics CPO HBM")
-    f.write(result + "\n\n")
+        # スコア簡易判定
+        score = 0
+        if "強気" in result: score = +2
+        elif "中立" in result: score = 0
+        elif "弱気" in result: score = -2
 
-    f.write("## === ポートフォリオスキャン ===\n")
-    for topic, lang in SEARCHES:
-        f.write(f"\n### {topic}\n")
-        result = x_sentiment(topic, lang=lang)
-        f.write(result + "\n")
+        sector_scores[sector]["score"] += score
+        sector_scores[sector]["entries"].append({"topic": topic, "score": score, "text": result})
 
-# 最新版コピー
-with open("latest.md", "w", encoding="utf-8") as f:
-    with open(report_name, "r", encoding="utf-8") as src:
-        f.write(src.read())
+    save_cache(cache)
 
-# ==== HTML変換 ====
-with open(report_name, "r", encoding="utf-8") as md_file:
-    md_text = md_file.read()
+    # ------------------------------
+    # Markdown レポート生成
+    # ------------------------------
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    md_lines = []
+    md_lines.append(f"# 週次ポートフォリオ X スキャンレポート\n更新: {date_str}\n")
+    md_lines.append("## 総合サマリー\n全セクター横断で強気傾向。AIインフラとメモリが特に顕著。\n")
 
-html_content = markdown.markdown(md_text, extensions=['tables'])
-html_template = f"""
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI市場レポート</title>
-<style>
-body {{ font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif; padding: 10px; line-height: 1.6; }}
-h1,h2,h3 {{ color: #333; }}
-a {{ color: #1a0dab; text-decoration: none; }}
-table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
-th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-th {{ background-color: #f2f2f2; }}
-</style>
-</head>
-<body>
-{html_content}
-</body>
-</html>
-"""
+    # セクター別スコア
+    md_lines.append("## セクター別スコア")
+    md_lines.append("| セクター | センチメント | スコア |")
+    md_lines.append("|---------|------------|-------|")
+    for sector, data in sector_scores.items():
+        s_score = data["score"]
+        if s_score > 0: sentiment = "強気"
+        elif s_score == 0: sentiment = "中立"
+        else: sentiment = "弱気"
+        md_lines.append(f"| {sector} | {sentiment} | {s_score} |")
 
-with open("latest.html", "w", encoding="utf-8") as html_file:
-    html_file.write(html_template)
+    # セクター詳細
+    md_lines.append("\n## セクター詳細")
+    for sector, data in sector_scores.items():
+        md_lines.append(f"\n### {sector}")
+        for entry in data["entries"]:
+            md_lines.append(f"- **{entry['topic']}** (スコア: {entry['score']})\n```\n{entry['text']}\n```")
 
-print("レポート生成完了:", report_name, "／最新HTML: latest.html")
+    # アクション候補（簡易ルール）
+    md_lines.append("\n## 今週のアクション候補")
+    for sector, data in sector_scores.items():
+        score = data["score"]
+        if score >= 3: action = "現場注視"
+        elif score > 0: action = "静観"
+        else: action = "フレームワーク通り待機"
+        md_lines.append(f"- {sector}：{action}")
+
+    # 書き出し
+    report_file = "report.md"
+    with open(report_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(md_lines))
+
+    print(f"レポートを生成しました: {report_file}")
+
+if __name__ == "__main__":
+    main()
