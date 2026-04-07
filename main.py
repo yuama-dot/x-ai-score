@@ -20,9 +20,10 @@ today = now_jst.strftime("%Y%m%d")
 
 sectors = {
     "メモリ": ["MU", "SK Hynix", "HBM"],
-    "AIインフラ": ["NVDA", "NVIDIA"],
+    "AIインフラ": ["$NVDA Blackwell", "NVDA earnings AI infrastructure", "NVIDIA datacenter demand"],
     "フォトニクス": ["住友電工", "CPO"],
-    "マクロ": ["S&P500 tariff recession risk 2026"]
+    "マクロ": ["S&P500 tariff recession risk 2026"],
+    "半導体素材/技術": ["from:paurooteri"]
 }
 
 # キャッシュは日付ごとに分離
