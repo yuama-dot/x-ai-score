@@ -2,7 +2,7 @@ name: X AI Score
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */6 * * *"  # 6時間ごと
   workflow_dispatch:
 
 jobs:
@@ -16,8 +16,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install xai-sdk
-
+      # 必要なパッケージをインストール
+      - run: |
+          pip install --upgrade pip
+          pip install xai-sdk markdown
+          
       - run: python main.py
         env:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
