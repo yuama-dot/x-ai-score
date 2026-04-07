@@ -1,0 +1,30 @@
+name: X AI Score
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install xai-sdk
+
+      - run: python main.py
+        env:
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+
+      - run: |
+          git config --global user.name "ai-score-bot"
+          git config --global user.email "265550930+yuama-dot@users.noreply.github.com"
+          git add .
+          git commit -m "update" || exit 0
+          git push
