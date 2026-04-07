@@ -22,6 +22,6 @@ jobs:
       - run: |
           git config --global user.name "x-ai-bot"
           git config --global user.email "265550930+yuama-dot@users.noreply.github.com"
-          git add report.md report_*.md cache.json
+          git add report.md report_*.md cache/
           git commit -m "Weekly portfolio scan update ($TODAY)" || exit 0
           git push
