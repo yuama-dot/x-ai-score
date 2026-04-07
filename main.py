@@ -164,4 +164,8 @@ with open(report_file, "w", encoding="utf-8") as f:
         f.write(f"**Xポスト内容**:\n{data['content']}\n\n")
         f.write("---\n\n")
 
+# report.mdにも最新版を書き出す（ワークフローのcp用）
+import shutil
+shutil.copy(report_file, "report.md")
+
 print(f"Report saved to {report_file}")
