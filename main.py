@@ -1,3 +1,12 @@
+from datetime import datetime, timezone, timedelta
+
+# 日本時間（JST = UTC+9）で現在時刻を取得
+JST = timezone(timedelta(hours=9))
+now_jst = datetime.now(JST)
+timestamp = now_jst.strftime("%Y-%m-%d %H:%M")
+
+# レポートに埋め込む
+report_header = f"# 週次ポートフォリオ X スキャンレポート\n更新: {timestamp}\n\n---\n"
 import os
 import json
 import datetime
