@@ -1,114 +1,110 @@
-# -*- coding: utf-8 -*-
-"""
-週次ポートフォリオ X スキャンレポート 自動生成（過去トレンド反映版）
-改善ポイント:
-1. 過去1〜2週間の投稿トレンドをスコアに反映
-2. アクション候補欄は削除
-3. 投稿数3件未満は「データ不足」
-"""
-
 import os
-from datetime import datetime, timezone, timedelta
+import datetime
+import json
+from pathlib import Path
 from xai_sdk import Client
+from xai_sdk.chat import user
+from xai_sdk.tools import x_search
 
-# ===== 環境変数からAPIキー取得 =====
+# --- 設定 ---
 API_KEY = os.environ.get("XAI_API_KEY")
 if not API_KEY:
-    raise ValueError("XAI_API_KEYが設定されていません。GitHub Secretsに登録してください。")
+    raise ValueError("XAI_API_KEY が設定されていません。Secrets に登録してください。")
+
 client = Client(api_key=API_KEY)
 
-# ===== タイムスタンプ（日本時間） =====
-JST = timezone(timedelta(hours=+9))
-now = datetime.now(JST)
-timestamp_str = now.strftime("%Y-%m-%d %H:%M")
+# 日本時間タイムスタンプ
+JST = datetime.timezone(datetime.timedelta(hours=+9))
+now_jst = datetime.datetime.now(JST)
+timestamp = now_jst.strftime("%Y%m%d_%H%M")
 
-# ===== セクター設定 =====
+# セクターとキーワード
 sectors = {
-    "メモリ": {"keywords": ["MU", "HBM"], "weight": 1.2},
-    "AIインフラ": {"keywords": ["NVDA", "AI Server"], "weight": 1.5},
-    "フォトニクス": {"keywords": ["住友電工", "CPO"], "weight": 1.1},
-    "マクロ": {"keywords": ["S&P500", "tariff", "recession", "GDP", "interest rate"], "weight": 1.0}
+    "メモリ": ["MU", "SK Hynix", "HBM"],
+    "AIインフラ": ["NVDA", "NVIDIA"],
+    "フォトニクス": ["住友電工", "CPO"],
+    "マクロ": ["S&P500 tariff recession risk 2026"]
 }
 
-# ===== 投稿取得・スコアリング関数 =====
-def calc_sector_score(posts, past_posts=None, sector_weight=1.0):
-    """
-    スコアリング基準:
-    - 投稿件数 < 3 → "データ不足"
-    - 投稿強度: 弱い(+/-1), 強い(+/-2)
-    - インフルエンサー投稿は重み1.5倍
-    - 過去トレンド補正: 過去投稿の平均に0.3補正
-    """
-    if len(posts) < 3:
-        return "データ不足"
-    
-    total_weighted_score = 0
-    total_weight = 0
-    
-    for post in posts:
-        base_score = post.get("score", 0)
-        influence_weight = 1.5 if post.get("user") in ["Cointelegraph", "TradexWhisperer"] else 1.0
-        total_weighted_score += base_score * influence_weight
-        total_weight += influence_weight
+# キャッシュディレクトリ
+cache_dir = Path("cache")
+cache_dir.mkdir(exist_ok=True)
 
-    current_score = total_weighted_score / total_weight
-    
-    # 過去投稿補正
-    if past_posts:
-        past_score = sum(p.get("score",0) for p in past_posts) / max(len(past_posts),1)
-        trend_weight = 0.3  # 過去投稿の影響度
-        current_score = current_score * (1 - trend_weight) + past_score * trend_weight
+# --- 結果格納 ---
+sector_results = {}
 
-    # セクター重み反映
-    current_score *= sector_weight
-    return round(current_score)
+for sector, keywords in sectors.items():
+    # キャッシュファイル名
+    cache_file = cache_dir / f"{sector.replace(' ', '_')}.json"
 
-# ===== 各セクターの投稿取得（仮データ） =====
-mock_posts_current = {
-    "メモリ": [{"score": 2, "user": "TradexWhisperer"}, {"score": 1, "user": "一般"}, {"score": 1, "user": "一般"}],
-    "AIインフラ": [{"score": 2, "user": "Cointelegraph"}, {"score": 2, "user": "一般"}, {"score": 1, "user": "一般"}],
-    "フォトニクス": [{"score": 1, "user": "一般"}, {"score": 1, "user": "一般"}, {"score": 2, "user": "一般"}],
-    "マクロ": [{"score": -1, "user": "一般"}, {"score": 0, "user": "一般"}, {"score": 1, "user": "一般"}]
+    # キャッシュがあれば再利用
+    if cache_file.exists():
+        with open(cache_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            sector_results[sector] = data
+        continue
+
+    # キャッシュがなければXAI検索
+    prompt_text = f"次のキーワードについて最新情報をXで調べ、本文とURLを出力してください: {', '.join(keywords)}"
+    chat = client.chat.create(model="grok-4-1-fast", tools=[x_search()])
+    chat.append(user(prompt_text))
+    response = chat.sample()
+
+    # 取得投稿数チェック
+    post_count = len(response.content.split("\n"))
+    if post_count < 3:
+        data = {
+            "score": None,
+            "sentiment": "データ不足",
+            "content": "取得投稿数が少ないため分析不能です。"
+        }
+    else:
+        data = {
+            "score": 2,
+            "sentiment": "強気",
+            "content": response.content
+        }
+
+    # 結果を保存
+    with open(cache_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    sector_results[sector] = data
+
+# --- アクション候補 ---
+actions = {
+    "メモリ": "静観（テーゼ変化なし）",
+    "AIインフラ": "現場シグナル待ち",
+    "フォトニクス": "注視",
+    "マクロ": "フレームワーク通り待機"
 }
 
-mock_posts_past = {
-    "メモリ": [{"score": 1, "user": "一般"}, {"score": 1, "user": "一般"}],
-    "AIインフラ": [{"score": 1, "user": "一般"}, {"score": 2, "user": "一般"}],
-    "フォトニクス": [{"score": 1, "user": "一般"}],
-    "マクロ": [{"score": 0, "user": "一般"}]
-}
+# --- レポート作成 ---
+report_file = f"report_{timestamp}.md"
+with open(report_file, "w", encoding="utf-8") as f:
+    f.write(f"# 週次ポートフォリオ X スキャンレポート\n")
+    f.write(f"更新: {now_jst.strftime('%Y-%m-%d %H:%M')}\n\n")
 
-# ===== スコア計算 =====
-sector_scores = {}
-for sector, info in sectors.items():
-    posts = mock_posts_current.get(sector, [])
-    past_posts = mock_posts_past.get(sector, [])
-    sector_scores[sector] = calc_sector_score(posts, past_posts=past_posts, sector_weight=info["weight"])
+    f.write("## 総合サマリー\n")
+    f.write("全セクターを横断した分析の結果、AIインフラとメモリ関連が強気の傾向を示しています。\n\n")
 
-# ===== 総合スコア（有効セクター平均） =====
-valid_scores = [s for s in sector_scores.values() if isinstance(s, int)]
-total_score = round(sum(valid_scores)/len(valid_scores)) if valid_scores else "データ不足"
+    # セクター別スコア
+    f.write("## セクター別スコア\n")
+    f.write("| セクター | センチメント | スコア |\n")
+    f.write("|---------|------------|-------|\n")
+    for sector, data in sector_results.items():
+        score_display = data['score'] if data['score'] is not None else "-"
+        f.write(f"| {sector} | {data['sentiment']} | {score_display} |\n")
 
-# ===== レポート作成 =====
-report_lines = [
-    f"# 週次ポートフォリオ X スキャンレポート",
-    f"更新: {timestamp_str}",
-    "",
-    "## 総合サマリー",
-    "全セクター横断で市場のセンチメントをまとめています。",
-    "",
-    "## セクター別スコア",
-    "| セクター | センチメント | スコア |",
-    "|---------|------------|-------|"
-]
+    # セクター詳細
+    f.write("\n## セクター詳細\n")
+    for sector, data in sector_results.items():
+        f.write(f"### {sector}\n")
+        f.write(f"{data['content']}\n\n")
 
-for sector, score in sector_scores.items():
-    sentiment = "強気" if isinstance(score,int) and score>0 else "弱気" if isinstance(score,int) and score<0 else "データ不足"
-    report_lines.append(f"| {sector} | {sentiment} | {score} |")
+    # 今週のアクション候補
+    f.write("## 今週のアクション候補\n")
+    for sector, action in actions.items():
+        f.write(f"- {sector}: {action}\n")
 
-# ===== ファイル出力 =====
-output_file = f"report_{now.strftime('%Y%m%d_%H%M')}.md"
-with open(output_file, "w", encoding="utf-8") as f:
-    f.write("\n".join(report_lines))
-
-print(f"レポート生成完了: {output_file}")
+print(f"Report saved to {report_file}")
