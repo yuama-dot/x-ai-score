@@ -1,8 +1,8 @@
-name: X AI Score
+name: X Portfolio Weekly Scan with History
 
 on:
   schedule:
-    - cron: "0 */6 * * *"  # 6時間ごと
+    - cron: "0 12 * * 5"  # 毎週金曜 12:00 UTC = 21:00 JST
   workflow_dispatch:
 
 jobs:
@@ -16,18 +16,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      # 必要なパッケージをインストール
-      - run: |
-          pip install --upgrade pip
-          pip install xai-sdk markdown
-          
-      - run: python main.py
-        env:
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      - run: pip install xai-sdk
 
       - run: |
-          git config --global user.name "ai-score-bot"
+          TODAY=$(date '+%Y%m%d_%H%M')
+          echo "Running scan for $TODAY"
+          python main.py --report report.md --cache cache.json
+          cp report.md report_${TODAY}.md
+
+      - run: |
+          git config --global user.name "x-ai-bot"
           git config --global user.email "265550930+yuama-dot@users.noreply.github.com"
-          git add .
-          git commit -m "update" || exit 0
+          git add report.md report_*.md cache.json
+          git commit -m "Weekly portfolio scan update ($TODAY)" || exit 0
           git push
