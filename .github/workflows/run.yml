@@ -1,27 +1,32 @@
-name: X Portfolio Weekly Scan with History
+name: X Portfolio Weekly Scan
+
 on:
   schedule:
-    - cron: "0 12 * * 5"
+    - cron: "0 12 * * 5"  # 毎週金曜 12:00 UTC（21:00 JST）
   workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}  # ← これを追加
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install xai-sdk
-      - run: |
-          TODAY=$(date '+%Y%m%d_%H%M')
-          echo "Running scan for $TODAY"
-          python main.py --report report.md --cache cache.json
-          cp report.md report_${TODAY}.md
-      - run: |
+
+      - name: Install dependencies
+        run: pip install xai-sdk
+
+      - name: Run scan
+        run: python main.py
+
+      - name: Commit and push results
+        run: |
           git config --global user.name "x-ai-bot"
           git config --global user.email "265550930+yuama-dot@users.noreply.github.com"
           git add report.md report_*.md cache/
-          git commit -m "Weekly portfolio scan update ($TODAY)" || exit 0
+          git diff --cached --quiet || git commit -m "Weekly portfolio scan ($(date '+%Y-%m-%d %H:%M UTC'))"
           git push
